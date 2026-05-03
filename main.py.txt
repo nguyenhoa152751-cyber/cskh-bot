@@ -1,0 +1,176 @@
+import os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ContextTypes, filters
+)
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+ADMIN_GROUP_ID = -1003923694468
+
+ADMIN_IDS = [6785796450, 5004870921, 5139970065, 1949773917]
+
+BC88_LINK = "https://bc88bet.com"
+
+user_data = {}
+ticket_map = {}
+
+MAIN_MENU = InlineKeyboardMarkup([
+    [InlineKeyboardButton("💰 Nạp / Rút tiền", callback_data="nap_rut")],
+    [InlineKeyboardButton("🎁 Khuyến mãi", callback_data="khuyen_mai")],
+    [InlineKeyboardButton("⚠️ Lỗi tài khoản / Lỗi game", callback_data="loi")],
+    [InlineKeyboardButton("📞 Gặp CSKH", callback_data="cskh")],
+    [
+        InlineKeyboardButton("📝 Đăng ký", url=BC88_LINK),
+        InlineKeyboardButton("🔐 Đăng nhập", url=BC88_LINK)
+    ]
+])
+
+def admin_buttons(user_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ DUYỆT", callback_data=f"approve:{user_id}"),
+            InlineKeyboardButton("❌ TỪ CHỐI", callback_data=f"reject:{user_id}")
+        ],
+        [InlineKeyboardButton("🌐 Link BC88", url=BC88_LINK)]
+    ])
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 Chào mừng quý khách đến với CSKH BC88BET\n\n"
+        "Quý khách vui lòng chọn mục cần hỗ trợ:",
+        reply_markup=MAIN_MENU
+    )
+
+async def menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    titles = {
+        "nap_rut": "💰 Nạp / Rút tiền",
+        "khuyen_mai": "🎁 Khuyến mãi",
+        "loi": "⚠️ Lỗi tài khoản / Lỗi game",
+        "cskh": "📞 Gặp CSKH"
+    }
+
+    user_id = query.from_user.id
+    user_data[user_id] = {
+        "step": "username",
+        "category": titles.get(query.data, "CSKH")
+    }
+
+    await query.message.reply_text(
+        f"Quý khách đã chọn: {titles.get(query.data)}\n\n"
+        "👉 Nhập TÊN TÀI KHOẢN:"
+    )
+
+async def handle_private_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    text = update.message.text
+
+    if user_id not in user_data:
+        await update.message.reply_text("Vui lòng chọn mục:", reply_markup=MAIN_MENU)
+        return
+
+    data = user_data[user_id]
+
+    if data["step"] == "username":
+        data["username"] = text
+        data["step"] = "phone"
+        await update.message.reply_text("👉 Nhập SỐ ĐIỆN THOẠI:")
+        return
+
+    if data["step"] == "phone":
+        data["phone"] = text
+        data["step"] = "content"
+        await update.message.reply_text("👉 Nhập NỘI DUNG CẦN HỖ TRỢ:")
+        return
+
+    if data["step"] == "content":
+        data["content"] = text
+
+        name = update.message.from_user.full_name
+        uid = update.message.from_user.id
+
+        msg = (
+            "📩 YÊU CẦU CSKH MỚI\n\n"
+            f"👤 Khách: {name}\n"
+            f"🆔 ID khách: {uid}\n"
+            f"📌 Mục: {data['category']}\n"
+            f"🎮 TK: {data['username']}\n"
+            f"📞 SĐT: {data['phone']}\n"
+            f"📝 Nội dung: {data['content']}"
+        )
+
+        sent = await context.bot.send_message(
+            chat_id=ADMIN_GROUP_ID,
+            text=msg,
+            reply_markup=admin_buttons(uid)
+        )
+
+        ticket_map[sent.message_id] = uid
+
+        await update.message.reply_text(
+            "✅ Đã gửi yêu cầu\nCSKH sẽ phản hồi sớm!",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🌐 Vào BC88", url=BC88_LINK)]
+            ])
+        )
+
+        del user_data[user_id]
+
+async def admin_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    admin_id = query.from_user.id
+
+    if admin_id not in ADMIN_IDS:
+        await query.answer("Không có quyền", show_alert=True)
+        return
+
+    action, uid = query.data.split(":")
+    uid = int(uid)
+
+    if action == "approve":
+        await context.bot.send_message(uid, "✅ Yêu cầu đã được duyệt")
+        await query.answer("Đã duyệt")
+
+    elif action == "reject":
+        await context.bot.send_message(uid, "❌ Yêu cầu bị từ chối")
+        await query.answer("Đã từ chối")
+
+async def admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != ADMIN_GROUP_ID:
+        return
+
+    if update.message.from_user.id not in ADMIN_IDS:
+        return
+
+    if not update.message.reply_to_message:
+        return
+
+    mid = update.message.reply_to_message.message_id
+    uid = ticket_map.get(mid)
+
+    if not uid:
+        return
+
+    await context.bot.send_message(
+        chat_id=uid,
+        text=f"📩 CSKH:\n\n{update.message.text}"
+    )
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(admin_action, pattern="^(approve|reject):"))
+    app.add_handler(CallbackQueryHandler(menu_click))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT, handle_private_message))
+    app.add_handler(MessageHandler(filters.Chat(ADMIN_GROUP_ID) & filters.TEXT, admin_reply))
+
+    print("Bot PRO đang chạy...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
